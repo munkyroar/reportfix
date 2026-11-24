@@ -718,6 +718,68 @@ describe('Password change, admin reset codes, two-factor sign-in', () => {
   });
 });
 
+// read every entry of a zip (used to open the .xlsx)
+function unzip(buf) {
+  const zlib = globalThis.__zlib;
+  const out = {};
+  let eocd = buf.length - 22;
+  while (eocd >= 0 && buf.readUInt32LE(eocd) !== 0x06054b50) eocd--;
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  for (let k = 0; k < count; k++) {
+    const method = buf.readUInt16LE(p + 10), csize = buf.readUInt32LE(p + 20), nlen = buf.readUInt16LE(p + 28);
+    const elen = buf.readUInt16LE(p + 30), clen = buf.readUInt16LE(p + 32), off = buf.readUInt32LE(p + 42);
+    const name = buf.slice(p + 46, p + 46 + nlen).toString();
+    const ln = buf.readUInt16LE(off + 26), le = buf.readUInt16LE(off + 28);
+    const data = buf.slice(off + 30 + ln + le, off + 30 + ln + le + csize);
+    out[name] = (method === 8 ? zlib.inflateRawSync(data) : data).toString('utf8');
+    p += 46 + nlen + elen + clen;
+  }
+  return out;
+}
+globalThis.__zlib = (await import('node:zlib')).default;
+
+describe('Excel export', () => {
+  async function download(token) {
+    const res = await fetch(base + '/api/admin/export.xlsx', { headers: token ? { cookie: `rf_session=${token}` } : {} });
+    return { status: res.status, type: res.headers.get('content-type'), disp: res.headers.get('content-disposition'), buf: Buffer.from(await res.arrayBuffer()) };
+  }
+  test('only the admin can export (student 403, staff 403, anonymous 401)', async () => {
+    assert.equal((await download(await newStudent())).status, 403);
+    assert.equal((await download(await staffToken('CSE'))).status, 403);
+    assert.equal((await download()).status, 401);
+  });
+  test('admin gets a valid .xlsx with problems, student reports, students, locations', async () => {
+    const who = await register();
+    const r = await report(who.cookie, '<b>Lab 2</b> mouse kharab hai =cmd|calc');
+    assert.equal(r.status, 201);
+    const secret = await register();
+    await report(secret.cookie, 'seniors are ragging juniors near the cafeteria');
+
+    const x = await download(await adminToken());
+    assert.equal(x.status, 200);
+    assert.match(x.type, /spreadsheetml/);
+    assert.match(x.disp, /attachment; filename="reportfix-.*\.xlsx"/);
+    assert.equal(x.buf.slice(0, 2).toString(), 'PK');
+    const files = unzip(x.buf);
+    for (const f of ['[Content_Types].xml', 'xl/workbook.xml', 'xl/styles.xml', 'xl/worksheets/sheet1.xml', 'xl/worksheets/sheet5.xml']) assert.ok(files[f], f);
+    assert.match(files['xl/workbook.xml'], /Reported problems.*Reports by student.*Students.*Locations.*Confidential \(anonymous\)/s);
+    const reportsSheet = files['xl/worksheets/sheet2.xml'];
+    assert.ok(reportsSheet.includes(who.data.user.username), 'student identity on their public report');
+    assert.ok(reportsSheet.includes('CSE Lab 2'), 'location included');
+    assert.ok(!/<b>|<f>/.test(reportsSheet), 'no raw HTML, no formulas');
+    assert.ok(reportsSheet.includes('=cmd|calc'), 'formula-looking text kept as plain inline text');
+    // confidential: reporter never appears anywhere in the workbook
+    assert.ok(!files['xl/worksheets/sheet2.xml'].includes(secret.data.user.username), 'confidential reporter not on the reports sheet');
+    assert.ok(!files['xl/worksheets/sheet2.xml'].includes('ragging'));
+    assert.ok(!files['xl/worksheets/sheet1.xml'].includes('ragging'));
+    assert.match(files['xl/worksheets/sheet5.xml'], /Anonymous student/);
+    // export is audited
+    const flags = (await call('GET', '/api/admin/flags', undefined, await adminToken())).data;
+    assert.ok(flags.some((f) => f.kind === 'data_export'));
+  });
+});
+
 describe('RBAC matrix: every role is blocked from every other role\'s routes', () => {
   const routes = [
     ['GET', '/api/staff/queue', ['staff']],

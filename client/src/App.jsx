@@ -15,6 +15,7 @@ const NAV = [
   ['users', 'Users and trust', 'admin:users'],
   ['flags', 'Abuse flags', 'admin:flags'],
   ['summary', 'Summary', 'admin:summary'],
+  ['export', 'Export to Excel', 'admin:export'],
   ['board', 'Campus board', 'board:read'],
   ['trust', 'My trust score', 'issue:vote'],
   ['account', 'Account security', 'account:manage'],
@@ -113,6 +114,7 @@ const SUBTITLE = {
   flags: 'Injection attempts, brigading and hazards reported without a place.',
   summary: 'An AI overview of open public issues. Confidential reports are excluded.',
   account: 'Your password and two-factor sign-in.',
+  export: 'Download every reported problem, student report and location as an Excel workbook.',
 };
 
 function initials(name) {

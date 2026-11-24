@@ -15,7 +15,7 @@ export const PERMISSIONS = {
   ],
   admin: [
     'me:read', 'board:read', 'account:manage',
-    'admin:reset_password',
+    'admin:reset_password', 'admin:export',
     'issue:read_all', 'issue:read_confidential',
     'issue:status_any', 'issue:reroute_any',
     'admin:issues', 'admin:confidential', 'admin:users', 'admin:flags', 'admin:summary', 'admin:ailog',

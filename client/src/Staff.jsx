@@ -100,6 +100,7 @@ export function Admin({ notify, tab }) {
       {tab === 'users' && <Users />}
       {tab === 'flags' && <Flags />}
       {tab === 'summary' && <Summary />}
+      {tab === 'export' && <ExportPanel notify={notify} />}
     </>
   );
 }
@@ -206,6 +207,49 @@ function Flags() {
       <thead><tr><th>When</th><th>Kind</th><th>Detail</th><th>User</th></tr></thead>
       <tbody>{data.map((f) => <tr key={f.id}><td>{fmtTime(f.created_at)}</td><td>{f.kind}</td><td>{f.detail}</td><td>{f.user_name || '-'}</td></tr>)}</tbody>
     </table>
+  );
+}
+
+function ExportPanel({ notify }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  async function download() {
+    setBusy(true); setError(null);
+    try {
+      const res = await fetch('/api/admin/export.xlsx', { credentials: 'same-origin' });
+      if (!res.ok) {
+        let msg = 'Export failed.';
+        try { msg = (await res.json()).error || msg; } catch { /* not json */ }
+        throw new Error(msg);
+      }
+      const blob = await res.blob();
+      const name = (res.headers.get('content-disposition') || '').match(/filename="([^"]+)"/)?.[1] || 'reportfix.xlsx';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      notify(`Downloaded ${name}`);
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
+  const sheets = [
+    ['Reported problems', 'Every public issue: problem, location, building, department, severity, hazard, priority, status, students affected, dates, AI reason.'],
+    ['Reports by student', 'Each report with the student name and username, location, what they wrote, where it was routed, and whether AI or the backup classifier triaged it.'],
+    ['Students', 'Trust score, vote weight, reports, issues they are affected by, votes, 2FA status, join date.'],
+    ['Locations', 'Per campus place: total and open issues, critical hazards, students affected, most common problem.'],
+    ['Confidential (anonymous)', 'Harassment cases with severity and status only. Reporters are never named anywhere in the file.'],
+  ];
+  return (
+    <section className="panel">
+      <h2 className="panel-title">Excel workbook (.xlsx)</h2>
+      <p className="muted small">Generated live from the database. Opens in Excel, Google Sheets and LibreOffice. Each download is recorded under Abuse flags.</p>
+      <table className="table" style={{ margin: '12px 0 16px' }}>
+        <thead><tr><th>Sheet</th><th>Contents</th></tr></thead>
+        <tbody>{sheets.map(([n, c]) => <tr key={n}><td><strong>{n}</strong></td><td>{c}</td></tr>)}</tbody>
+      </table>
+      <button className="btn primary" onClick={download} disabled={busy}>{busy ? 'Building workbook...' : 'Download Excel report'}</button>
+      <ErrorBox text={error} />
+    </section>
   );
 }
 

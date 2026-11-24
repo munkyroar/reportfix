@@ -10,6 +10,7 @@ import {
   newTotpSecret, verifyTotp,
 } from './auth.js';
 import { addFlag } from './store.js';
+import { buildExport } from './export.js';
 import { requirePerm, PERMISSIONS } from './rbac.js';
 import { openDb } from './db.js';
 import { seed } from './seed.js';
@@ -436,6 +437,19 @@ export function createApp({ db = openDb(), demo = process.env.DEMO_MODE === 'tru
   });
   app.get('/api/admin/ai-log', requirePerm('admin:ailog'), (req, res) => {
     res.json(db.prepare(`SELECT a.id, a.report_id, a.prompt_version, a.provider, a.fallback_used, a.error, a.created_at, a.raw_output FROM ai_log a JOIN reports r ON r.id=a.report_id WHERE r.confidential=0 ORDER BY a.id DESC LIMIT 50`).all());
+  });
+
+  // Excel export (admin only, audited, rate limited). Confidential reports are never tied to a student in the file.
+  const exportLimit = rateLimit({ windowMs: 60 * 1000, limit: limits.export ?? 10, standardHeaders: 'draft-7', legacyHeaders: false, validate: false, keyGenerator: (req) => `exp${req.user.id}`, message: { error: 'Too many exports. Wait a minute.' } });
+  app.get('/api/admin/export.xlsx', requirePerm('admin:export'), exportLimit, (req, res) => {
+    const { buffer, counts } = buildExport(db);
+    addFlag(db, { kind: 'data_export', user_id: req.user.id, detail: `Excel export downloaded: ${counts.problems} problems, ${counts.reports} reports, ${counts.students} students, ${counts.confidential} confidential (anonymous).` });
+    const n = new Date();
+    const p2 = (x) => String(x).padStart(2, '0');
+    const stamp = `${n.getFullYear()}-${p2(n.getMonth() + 1)}-${p2(n.getDate())}-${p2(n.getHours())}${p2(n.getMinutes())}`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="reportfix-${stamp}.xlsx"`);
+    res.send(buffer);
   });
 
   // AI admin summary over stats only (confidential excluded at SQL level)
