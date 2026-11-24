@@ -1,0 +1,21 @@
+{
+  "name": "reportfix-server",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "node --watch-path=src src/index.js",
+    "start": "node src/index.js",
+    "test": "node --test --test-reporter=spec tests/attack.test.js",
+    "test:attack": "node --test --test-reporter=spec tests/attack.test.js",
+    "test:attack:live": "node --test --test-reporter=spec --test-concurrency=1 tests/live-runner.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.0",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.0.0",
+    "helmet": "^8.0.0",
+    "zod": "^4.0.0"
+  }
+}

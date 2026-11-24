@@ -1,0 +1,20 @@
+[
+  { "id": 1, "name": "CSE Lab 1", "building": "CSE Block", "kind": "cse_lab", "aliases": ["lab 1", "computer lab 1", "cs lab 1", "cse lab 1"] },
+  { "id": 2, "name": "CSE Lab 2", "building": "CSE Block", "kind": "cse_lab", "aliases": ["lab 2", "computer lab 2", "cs lab 2", "cse lab 2"] },
+  { "id": 3, "name": "CSE Lab 3", "building": "CSE Block", "kind": "cse_lab", "aliases": ["lab 3", "computer lab 3", "cs lab 3", "cse lab 3"] },
+  { "id": 4, "name": "Electronics Lab", "building": "EE Block", "kind": "lab", "aliases": ["lab 4", "electronics lab", "ee lab", "electronic lab"] },
+  { "id": 5, "name": "Physics Lab", "building": "Academic Block", "kind": "lab", "aliases": ["lab 5", "physics lab", "physic lab"] },
+  { "id": 6, "name": "Main Library", "building": "Library Building", "kind": "library", "aliases": ["library", "libary", "lib", "kutub khana", "kutubkhana", "main library", "reading room"] },
+  { "id": 7, "name": "Cafeteria", "building": "Cafeteria", "kind": "cafeteria", "aliases": ["cafeteria", "cafe", "caf", "canteen", "kaifay", "kefay", "kaife", "cafetaria", "cafe area"] },
+  { "id": 8, "name": "CSE Block", "building": "CSE Block", "kind": "building", "aliases": ["cse block", "cs block", "cse department", "computer block", "cse dept"] },
+  { "id": 9, "name": "EE Block", "building": "EE Block", "kind": "building", "aliases": ["ee block", "ee department", "electrical block", "ee dept"] },
+  { "id": 10, "name": "Admin Block", "building": "Admin Block", "kind": "building", "aliases": ["admin block", "admin office", "administration"] },
+  { "id": 11, "name": "Lecture Hall 1", "building": "Academic Block", "kind": "classroom", "aliases": ["lecture hall 1", "lh 1", "hall 1", "lt 1"] },
+  { "id": 12, "name": "Lecture Hall 2", "building": "Academic Block", "kind": "classroom", "aliases": ["lecture hall 2", "lh 2", "hall 2", "lt 2"] },
+  { "id": 13, "name": "Auditorium", "building": "Auditorium", "kind": "hall", "aliases": ["auditorium", "audi", "auditoriam"] },
+  { "id": 14, "name": "Boys Hostel", "building": "Hostels", "kind": "hostel", "aliases": ["boys hostel", "hostel", "bh"] },
+  { "id": 15, "name": "Girls Hostel", "building": "Hostels", "kind": "hostel", "aliases": ["girls hostel", "gh"] },
+  { "id": 16, "name": "Main Gate", "building": "Main Gate", "kind": "outdoor", "aliases": ["main gate", "gate"] },
+  { "id": 17, "name": "Sports Complex", "building": "Sports Complex", "kind": "outdoor", "aliases": ["sports complex", "gym", "sports ground", "cricket ground", "football ground"] },
+  { "id": 18, "name": "Parking", "building": "Parking", "kind": "outdoor", "aliases": ["parking", "parking lot", "car park"] }
+]
