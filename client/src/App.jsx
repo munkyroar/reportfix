@@ -56,7 +56,7 @@ export default function App() {
   }
 
   if (me === undefined) return <div className="center"><Loading /></div>;
-  if (!me) return <Login onDone={loadMe} error={error} />;
+  if (!me) return <Login onDone={loadMe} error={error} demo={config?.demo} />;
 
   const nav = NAV.filter(([, , perm]) => me.permissions.includes(perm));
   const roleLabel = me.role === 'staff' ? `${me.department} staff` : me.role === 'admin' ? 'Administrator' : 'Student';
@@ -81,6 +81,7 @@ export default function App() {
               <div className="user-role">{roleLabel}{me.role === 'student' ? ` · trust ${me.trust_score}` : ''}</div>
             </div>
           </div>
+          {config?.demo && <UserSwitcher current={me.id} onSwitched={() => { setPage(null); loadMe(); }} />}
           {config?.demo && me.permissions.includes('demo:reset') && <button className="btn ghost danger block" onClick={reset}>Reset demo data</button>}
           <button className="btn ghost block" onClick={logout}>Sign out</button>
           <div className="ai-pill">AI: {config?.ai || '...'}</div>
@@ -119,11 +120,75 @@ const SUBTITLE = {
   export: 'Download every reported problem, student report and location as an Excel workbook.',
 };
 
+function useDemoUsers() {
+  const [users, setUsers] = useState([]);
+  useEffect(() => { get('/api/demo/users').then(setUsers).catch(() => setUsers([])); }, []);
+  return users;
+}
+
+function UserSwitcher({ current, onSwitched }) {
+  const users = useDemoUsers();
+  async function pick(e) {
+    const id = Number(e.target.value);
+    if (!id || id === current) return;
+    await post('/api/demo/switch', { userId: id });
+    onSwitched();
+  }
+  return (
+    <label className="switcher">
+      <span className="sr">Switch user</span>
+      <select value={current} onChange={pick} aria-label="Switch user">
+        {['student', 'staff', 'admin'].map((r) => (
+          <optgroup key={r} label={r === 'staff' ? 'Department staff' : r === 'admin' ? 'Admin' : 'Students'}>
+            {users.filter((u) => u.role === r).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </optgroup>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function DemoPicker({ onDone }) {
+  const users = useDemoUsers();
+  const [error, setError] = useState(null);
+  async function pick(id) {
+    try { await post('/api/demo/switch', { userId: id }); await onDone(); } catch (e) { setError(e.message); }
+  }
+  return (
+    <div>
+      <p className="hint">Demo mode: pick anyone to sign in instantly. Permissions are still enforced per role.</p>
+      {[['student', 'Students'], ['staff', 'Department staff'], ['admin', 'Admin']].map(([r, label]) => (
+        <div key={r} className="group">
+          <h3>{label}</h3>
+          <div className="pick">{users.filter((u) => u.role === r).map((u) => <button key={u.id} className="btn" onClick={() => pick(u.id)}>{u.name}</button>)}</div>
+        </div>
+      ))}
+      <ErrorBox text={error} />
+    </div>
+  );
+}
+
 function initials(name) {
   return String(name).replace(/\(.*\)/, '').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
 }
 
-function Login({ onDone, error: outerError }) {
+function Login({ onDone, error: outerError, demo }) {
+  if (demo) {
+    return (
+      <div className="auth">
+        <section className="auth-intro">
+          <div className="logo big"><span className="logo-mark" aria-hidden="true">RF</span><span>ReportFix</span></div>
+          <h2>Projector dead in Lab 3? Report it once.</h2>
+          <p>The right department gets it. The students it affects confirm the fix.</p>
+        </section>
+        <section className="auth-card"><DemoPicker onDone={onDone} /></section>
+      </div>
+    );
+  }
+  return <PasswordLogin onDone={onDone} error={outerError} />;
+}
+
+function PasswordLogin({ onDone, error: outerError }) {
   const [mode, setMode] = useState('login'); // login | register | mfa | reset
   const [form, setForm] = useState({ name: '', username: '', password: '', website: '', code: '', resetCode: '' });
   const [challenge, setChallenge] = useState(null);

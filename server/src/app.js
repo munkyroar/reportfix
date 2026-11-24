@@ -193,13 +193,28 @@ export function createApp({ db = openDb(), demo = process.env.DEMO_MODE === 'tru
     res.json({ ok: true });
   });
 
+  // ---------- demo: one-click user switch, no passwords (only when DEMO_MODE=true) ----------
+  // Each switch creates a normal server-side session; RBAC + ownership checks still apply on every request.
+  app.get('/api/demo/users', (req, res) => {
+    if (!demo) return res.status(404).json({ error: 'Not found' });
+    res.json(db.prepare("SELECT id, name, username, role, department FROM users ORDER BY CASE role WHEN 'student' THEN 0 WHEN 'staff' THEN 1 ELSE 2 END, id").all());
+  });
+  app.post('/api/demo/switch', ipAuthLimit, v(z.object({ userId: z.number().int().positive() })), (req, res) => {
+    if (!demo) return res.status(404).json({ error: 'Not found' });
+    const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.valid.body.userId);
+    if (!user) return res.status(404).json({ error: 'Not found' });
+    destroySession(db, readCookie(req, SESSION_COOKIE));
+    setSessionCookie(req, res, createSession(db, user.id));
+    res.json({ user: publicUser(user) });
+  });
+
   app.post('/api/auth/logout', (req, res) => {
     destroySession(db, readCookie(req, SESSION_COOKIE));
     clearSessionCookie(res);
     res.json({ ok: true });
   });
 
-  app.use('/api', (req, res, next) => (req.path === '/config' || req.path.startsWith('/auth/') ? next() : auth(req, res, next)));
+  app.use('/api', (req, res, next) => (req.path === '/config' || req.path.startsWith('/auth/') || req.path === '/demo/users' || req.path === '/demo/switch' ? next() : auth(req, res, next)));
 
   // demo reset: admin only AND only when DEMO_MODE=true
   app.post('/api/demo/reset', requirePerm('demo:reset'), (req, res) => {

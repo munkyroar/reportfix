@@ -558,12 +558,27 @@ describe('Rate limits', () => {
 
 // ---------------------------------------------------------------- authentication + RBAC
 describe('Authentication: nobody can sign in as someone else', () => {
-  test('there is no user-switch / impersonation endpoint', async () => {
-    for (const [m, u] of [['GET', '/api/demo/users'], ['POST', '/api/demo/login'], ['POST', '/api/demo/new-student']]) {
-      const r = await call(m, u, m === 'POST' ? { userId: 1 } : undefined);
-      assert.ok([401, 404].includes(r.status), `${u} -> ${r.status}`);
-      assert.ok(!r.cookie);
-    }
+  test('demo one-click switch: works only in DEMO_MODE, and RBAC still applies to the switched-in user', async () => {
+    const list = await call('GET', '/api/demo/users');
+    assert.equal(list.status, 200);
+    assert.ok(!/password|scrypt|mfa/.test(JSON.stringify(list.data)), 'no secrets in the user list');
+    const student = list.data.find((u) => u.username === 'zainab');
+    const sw = await call('POST', '/api/demo/switch', { userId: student.id });
+    assert.equal(sw.status, 200);
+    assert.ok(sw.cookie);
+    assert.equal((await call('GET', '/api/admin/users', undefined, sw.cookie)).status, 403, 'switched-in student is still a student');
+    assert.equal((await call('GET', '/api/staff/queue', undefined, sw.cookie)).status, 403);
+    assert.equal((await call('POST', '/api/demo/switch', { userId: 999999 })).status, 404);
+    assert.equal((await call('POST', '/api/demo/switch', { userId: 'admin' })).status, 400);
+    // with DEMO_MODE off, the switcher does not exist
+    const { app } = createApp({ db: openDb(':memory:'), demo: false, credentialsFile: null, limits: BIG });
+    const srv = await new Promise((r) => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
+    const b = `http://127.0.0.1:${srv.address().port}`;
+    const a = await raw('GET', '/api/demo/users', undefined, undefined, b);
+    const c = await raw('POST', '/api/demo/switch', { userId: 1 }, undefined, b);
+    srv.close();
+    assert.equal(a.status, 404); assert.equal(c.status, 404); assert.ok(!c.cookie);
+    for (const [m, u] of [['POST', '/api/demo/login'], ['POST', '/api/demo/new-student']]) assert.ok([401, 404].includes((await call(m, u, { userId: 1 })).status), u);
   });
   test('wrong password and unknown user give the same generic 401', async () => {
     const a = await call('POST', '/api/auth/login', { username: 'admin', password: 'wrong-password-123' });
