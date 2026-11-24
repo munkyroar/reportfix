@@ -66,6 +66,8 @@ h1, h2, h3, h4 { line-height: 1.25; }
 .avatar { width: 36px; height: 36px; border-radius: 50%; background: #334155; color: #fff; display: grid; place-items: center; font-weight: 600; font-size: .85rem; flex: none; }
 .user-name { color: #fff; font-weight: 600; font-size: .92rem; }
 .user-role { font-size: .8rem; color: #94a3b8; }
+.demo-picker .field select { display: block; width: 100%; margin-top: 6px; cursor: pointer; }
+.demo-picker .field { margin-bottom: 18px; }
 .switcher select { width: 100%; background: #1e293b; color: #fff; border-color: #334155; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .ai-pill { font-size: .75rem; color: #64748b; padding: 0 6px; }

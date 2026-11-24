@@ -154,15 +154,22 @@ function DemoPicker({ onDone }) {
   async function pick(id) {
     try { await post('/api/demo/switch', { userId: id }); await onDone(); } catch (e) { setError(e.message); }
   }
+  const roles = [['student', 'Students', 'Choose a student'], ['staff', 'Department staff', 'Choose a department'], ['admin', 'Admin', 'Choose admin']];
   return (
-    <div>
-      <p className="hint">Demo mode: pick anyone to sign in instantly. Permissions are still enforced per role.</p>
-      {[['student', 'Students'], ['staff', 'Department staff'], ['admin', 'Admin']].map(([r, label]) => (
-        <div key={r} className="group">
-          <h3>{label}</h3>
-          <div className="pick">{users.filter((u) => u.role === r).map((u) => <button key={u.id} className="btn" onClick={() => pick(u.id)}>{u.name}</button>)}</div>
-        </div>
-      ))}
+    <div className="demo-picker">
+      <h2 className="panel-title">Sign in</h2>
+      <p className="hint">Demo mode: choose a name to sign in instantly. Permissions are still enforced per role.</p>
+      {roles.map(([r, label, placeholder]) => {
+        const list = users.filter((u) => u.role === r);
+        return (
+          <label key={r} className="field">{label} <span className="muted small">({list.length})</span>
+            <select value="" onChange={(e) => e.target.value && pick(Number(e.target.value))} disabled={!list.length}>
+              <option value="">{placeholder}...</option>
+              {list.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+          </label>
+        );
+      })}
       <ErrorBox text={error} />
     </div>
   );
