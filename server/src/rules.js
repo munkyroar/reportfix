@@ -388,4 +388,25 @@ export const TRUST = {
   VOTE_MISMATCH: -2,
   SPAM: -10,
   INJECTION: -15,
+  RATING_ACCURATE: 3,
+  RATING_CLOSE: 1,
+  RATING_OVERSTATED: -3,
+  RATING_WILD: -6,
 };
+
+// ---------- student severity ratings vs admin-verified severity ----------
+// The student's rating NEVER changes priority by itself (it can't be used to jump the queue).
+// It only feeds credibility once the admin verifies how severe the problem really was.
+export const CLAIM_LEVELS = { minor: 1, moderate: 2, serious: 3, emergency: 4 };
+export const CLAIM_LABEL = { minor: 'Minor', moderate: 'Moderate', serious: 'Serious', emergency: 'Emergency' };
+export const TIER_LEVEL = { Low: 1, Medium: 2, High: 3, Critical: 4 };
+export const TIERS = Object.keys(TIER_LEVEL);
+
+export function scoreRating(claim, verifiedTier) {
+  const diff = CLAIM_LEVELS[claim] - TIER_LEVEL[verifiedTier]; // + means the student overstated
+  if (diff === 0) return { outcome: 'accurate', delta: TRUST.RATING_ACCURATE };
+  if (Math.abs(diff) === 1) return { outcome: 'close', delta: TRUST.RATING_CLOSE };
+  if (diff >= 3) return { outcome: 'wildly overstated', delta: TRUST.RATING_WILD };
+  if (diff === 2) return { outcome: 'overstated', delta: TRUST.RATING_OVERSTATED };
+  return { outcome: 'understated', delta: 0 }; // playing a problem down is not abuse: no penalty
+}

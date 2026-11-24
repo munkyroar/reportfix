@@ -147,6 +147,33 @@ input { flex: 1; min-width: 200px; }
 .btn.link:hover { text-decoration: underline; background: none; }
 .issued { border-color: var(--warn-line); background: var(--warn-soft); }
 .actions { white-space: nowrap; }
+
+/* photos */
+.photos { margin-top: 10px; }
+.photo-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0; }
+.photo-thumb { position: relative; width: 112px; height: 112px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line-2); background: var(--surface-2); display: block; }
+.photo-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+a.photo-thumb:hover { border-color: var(--accent); }
+.photo-remove { position: absolute; left: 0; right: 0; bottom: 0; min-height: 30px; border: 0; background: rgba(17, 24, 39, .75); color: #fff; font: inherit; font-size: .8rem; cursor: pointer; }
+.photo-add { width: 112px; height: 112px; border: 1px dashed var(--line-2); border-radius: 8px; display: grid; place-items: center; color: var(--accent); font-weight: 500; cursor: pointer; background: var(--surface); }
+.photo-add:hover { border-color: var(--accent); background: var(--accent-soft); }
+.photo-add input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+
+/* severity self-rating */
+.claim { border: 0; padding: 0; margin: 14px 0 10px; }
+.claim legend { padding: 0; margin-bottom: 6px; }
+.claim-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.claim-opt { min-height: 44px; padding: 0 16px; border: 1px solid var(--line-2); border-radius: 999px; display: inline-flex; align-items: center; cursor: pointer; font-weight: 500; background: var(--surface); }
+.claim-opt input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.claim-opt.active { background: var(--accent-soft); border-color: var(--accent); color: #1e40af; }
+.claim-opt:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* admin verification + dispatch */
+.admin-controls { margin-top: 12px; display: grid; gap: 10px; }
+.ctl { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--surface-2); }
+.ctl-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; justify-content: space-between; }
+.ctl .row { margin-top: 6px; }
+.ctl p { margin: 6px 0 0; }
 .actions .btn + .btn { margin-left: 6px; }
 
 .toast { position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: #fff; padding: 12px 18px; border-radius: 8px; max-width: calc(100% - 40px); z-index: 10; box-shadow: 0 10px 25px rgba(0,0,0,.2); }

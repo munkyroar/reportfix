@@ -25,6 +25,32 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS photos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_id INTEGER NOT NULL REFERENCES reports(id),
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  file_name TEXT NOT NULL UNIQUE,
+  mime TEXT NOT NULL CHECK (mime IN ('image/jpeg','image/png')),
+  bytes INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_photos_report ON photos(report_id);
+
+-- admin-verified severity vs the student's own rating: one scored outcome per (report, issue)
+CREATE TABLE IF NOT EXISTS rating_outcomes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_id INTEGER NOT NULL REFERENCES reports(id),
+  issue_id INTEGER NOT NULL REFERENCES issues(id),
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  claimed TEXT NOT NULL,
+  verified TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  delta REAL NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE (report_id, issue_id)
+);
+
 CREATE TABLE IF NOT EXISTS auth_tokens (
   token_hash TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -156,6 +182,12 @@ export function openDb(file) {
     if (!cols.includes(c)) db.exec(`ALTER TABLE users ADD COLUMN ${c} ${t}`);
   }
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)');
+  const rcols = db.prepare('PRAGMA table_info(reports)').all().map((c) => c.name);
+  if (!rcols.includes('claimed_severity')) db.exec('ALTER TABLE reports ADD COLUMN claimed_severity TEXT');
+  const icols = db.prepare('PRAGMA table_info(issues)').all().map((c) => c.name);
+  for (const [c, t] of [['ai_severity', 'TEXT'], ['verified_severity', 'TEXT'], ['verified_note', 'TEXT'], ['verified_at', 'INTEGER'], ['support_dispatched_at', 'INTEGER'], ['support_note', 'TEXT']]) {
+    if (!icols.includes(c)) db.exec(`ALTER TABLE issues ADD COLUMN ${c} ${t}`);
+  }
   return db;
 }
 
@@ -163,7 +195,7 @@ export function wipe(db) {
   db.exec(`
     PRAGMA foreign_keys = OFF;
     DELETE FROM admin_flags; DELETE FROM ai_log; DELETE FROM status_log; DELETE FROM trust_events;
-    DELETE FROM sessions; DELETE FROM auth_tokens; DELETE FROM votes; DELETE FROM issue_members; DELETE FROM issues; DELETE FROM reports;
+    DELETE FROM sessions; DELETE FROM auth_tokens; DELETE FROM rating_outcomes; DELETE FROM photos; DELETE FROM votes; DELETE FROM issue_members; DELETE FROM issues; DELETE FROM reports;
     DELETE FROM users; DELETE FROM locations;
     DELETE FROM sqlite_sequence;
     PRAGMA foreign_keys = ON;

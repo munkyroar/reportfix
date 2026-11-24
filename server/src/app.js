@@ -11,17 +11,20 @@ import {
 } from './auth.js';
 import { addFlag } from './store.js';
 import { buildExport } from './export.js';
+import fs from 'node:fs';
+import { cleanImage, savePhoto, canViewPhoto, photosForIssue, clearUploads, MAX_PHOTO_BYTES, MAX_PHOTOS_PER_REPORT } from './photos.js';
 import { requirePerm, PERMISSIONS } from './rbac.js';
 import { openDb } from './db.js';
 import { seed } from './seed.js';
-import { buildLocationIndex, ROUTE_TARGETS, personWeight, isNewAccount } from './rules.js';
+import { buildLocationIndex, ROUTE_TARGETS, personWeight, isNewAccount, CLAIM_LEVELS, TIERS } from './rules.js';
 import { submitReport, clarifyReport, UserError, labelType } from './pipeline.js';
-import { meToo, changeStatus, reroute, vote, canManage } from './community.js';
+import { meToo, changeStatus, reroute, vote, canManage, verifySeverity, dispatchSupport } from './community.js';
 import { callJson, llmConfig } from './llm.js';
 import { MAX_RAW } from './text.js';
 
-export function createApp({ db = openDb(), demo = process.env.DEMO_MODE === 'true', limits = {}, credentialsFile } = {}) {
+export function createApp({ db = openDb(), demo = process.env.DEMO_MODE === 'true', limits = {}, credentialsFile, uploadsDir: uploadsOpt } = {}) {
   const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+  const uploadsDir = uploadsOpt || path.resolve('data', 'uploads');
   const credFile = credentialsFile === undefined ? path.resolve('data', 'demo-credentials.txt') : credentialsFile;
 
   let credentials = null;
@@ -202,6 +205,7 @@ export function createApp({ db = openDb(), demo = process.env.DEMO_MODE === 'tru
   app.post('/api/demo/reset', requirePerm('demo:reset'), (req, res) => {
     if (!demo) return res.status(404).json({ error: 'Not found' });
     seed(db, { credentialsFile: credFile });
+    clearUploads(uploadsDir);
     locCache = null;
     clearSessionCookie(res);
     res.json({ ok: true });
@@ -283,10 +287,44 @@ export function createApp({ db = openDb(), demo = process.env.DEMO_MODE === 'tru
   app.get('/api/locations', (req, res) => res.json(ctx.locationIndex().map((l) => ({ id: l.id, name: l.name, building: l.building }))));
 
   // ---------- student: report ----------
-  const ReportBody = z.object({ text: z.string({ error: 'Please describe the problem.' }).max(MAX_RAW, `Keep it under ${MAX_RAW} characters.`) });
+  const ReportBody = z.object({
+    text: z.string({ error: 'Please describe the problem.' }).max(MAX_RAW, `Keep it under ${MAX_RAW} characters.`),
+    claimed_severity: z.enum(Object.keys(CLAIM_LEVELS)).optional(),
+  });
   app.post('/api/report', requirePerm('report:create'), reportLimit, v(ReportBody), async (req, res) => {
-    const out = await submitReport(ctx, req.user, req.valid.body.text);
+    const out = await submitReport(ctx, req.user, req.valid.body.text, req.valid.body.claimed_severity ?? null);
     res.status(201).json(out);
+  });
+
+  // ---------- photo evidence ----------
+  // raw image body (no multipart parser needed); type decided from the bytes, metadata stripped, random file name
+  const photoLimit = rateLimit({ windowMs: 60 * 1000, limit: limits.photo ?? 12, standardHeaders: 'draft-7', legacyHeaders: false, validate: false, keyGenerator: (req) => `ph${req.user.id}`, message: { error: 'Too many uploads. Wait a minute.' } });
+  app.post('/api/reports/:id/photos', requirePerm('photo:upload_own'), photoLimit, v(IdParam, 'params'),
+    express.raw({ type: () => true, limit: MAX_PHOTO_BYTES }), (req, res) => {
+      const report = db.prepare('SELECT id, user_id, created_at FROM reports WHERE id=?').get(req.valid.params.id);
+      if (!report || report.user_id !== req.user.id) return res.status(404).json({ error: 'Not found' });
+      if (Date.now() - report.created_at > 24 * 3600 * 1000) return res.status(409).json({ error: 'Photos can be added within 24 hours of reporting.' });
+      const n = db.prepare('SELECT COUNT(*) c FROM photos WHERE report_id=?').get(report.id).c;
+      if (n >= MAX_PHOTOS_PER_REPORT) return res.status(409).json({ error: `Up to ${MAX_PHOTOS_PER_REPORT} photos per report.` });
+      const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      if (!buf.length) return res.status(400).json({ error: 'Choose a photo to upload.' });
+      const img = cleanImage(buf);
+      if (!img) return res.status(400).json({ error: 'Only JPEG or PNG photos are accepted.' });
+      const id = savePhoto(db, uploadsDir, { reportId: report.id, userId: req.user.id, mime: img.mime, data: img.data });
+      res.status(201).json({ id });
+    });
+
+  app.get('/api/photos/:id', v(IdParam, 'params'), (req, res) => {
+    const p = db.prepare('SELECT * FROM photos WHERE id=?').get(req.valid.params.id);
+    if (!p || !canViewPhoto(db, req.user, p)) return res.status(404).json({ error: 'Not found' });
+    const file = path.join(uploadsDir, path.basename(p.file_name));
+    if (!fs.existsSync(file)) return res.status(404).json({ error: 'Not found' });
+    res.setHeader('Content-Type', p.mime);
+    res.setHeader('Content-Disposition', `inline; filename="photo-${p.id}.${p.mime === 'image/png' ? 'png' : 'jpg'}"`);
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.send(fs.readFileSync(file));
   });
   app.post('/api/reports/:id/clarify', requirePerm('report:clarify_own'), reportLimit, v(IdParam, 'params'), v(z.object({ location_id: z.number().int().positive() })), async (req, res) => {
     res.json(await clarifyReport(ctx, req.user, req.valid.params.id, req.valid.body.location_id));
@@ -326,9 +364,26 @@ export function createApp({ db = openDb(), demo = process.env.DEMO_MODE === 'tru
   function studentIssueView(i, user) {
     if (i.confidential) {
       // reporter can track status; nothing else (no other members, no admin identity)
-      return { id: i.id, title: 'Your confidential report', confidential: true, status: i.status, severity: i.severity, department: 'Admin (confidential)', created_at: i.created_at, updated_at: i.updated_at, timeline: timeline(i.id, false).map((t) => ({ ...t, by: t.by === 'system' ? 'system' : 'admin' })) };
+      return { id: i.id, title: 'Your confidential report', confidential: true, status: i.status, severity: i.severity, department: 'Admin (confidential)', created_at: i.created_at, updated_at: i.updated_at, my_photos: myPhotos(i.id, user.id), timeline: timeline(i.id, false).map((t) => ({ ...t, by: t.by === 'system' ? 'system' : 'admin' })) };
     }
-    return { ...publicIssue(i, user), timeline: timeline(i.id, false) };
+    return { ...publicIssue(i, user), my_photos: myPhotos(i.id, user.id), my_reports: myReportIds(i.id, user.id), verified_severity: i.verified_severity, timeline: timeline(i.id, false) };
+  }
+  function myPhotos(issueId, userId) {
+    return db.prepare('SELECT p.id FROM photos p JOIN issue_members m ON m.report_id=p.report_id WHERE m.issue_id=? AND p.user_id=? ORDER BY p.id').all(issueId, userId).map((r) => r.id);
+  }
+  function myReportIds(issueId, userId) {
+    return db.prepare('SELECT report_id FROM issue_members WHERE issue_id=? AND user_id=? AND report_id IS NOT NULL').all(issueId, userId).map((r) => r.report_id);
+  }
+  // how the students who reported it rated it themselves (counts only, no identities)
+  function ratingSummary(issueId) {
+    const rows = db.prepare('SELECT r.claimed_severity AS c, COUNT(*) n FROM issue_members m JOIN reports r ON r.id=m.report_id WHERE m.issue_id=? AND r.claimed_severity IS NOT NULL GROUP BY r.claimed_severity').all(issueId);
+    return Object.fromEntries(rows.map((r) => [r.c, r.n]));
+  }
+  function verification(i) {
+    return {
+      ai_severity: i.ai_severity || i.severity, verified_severity: i.verified_severity, verified_note: i.verified_note, verified_at: i.verified_at,
+      support_dispatched_at: i.support_dispatched_at, support_note: i.support_note, student_ratings: ratingSummary(i.id),
+    };
   }
 
   // Public board: non-confidential only, filtered in SQL
@@ -377,6 +432,8 @@ export function createApp({ db = openDb(), demo = process.env.DEMO_MODE === 'tru
         dispute_weight: round2(votes.filter((x) => x.verdict === 'dispute').reduce((a, x) => a + x.weight_at_vote, 0)),
         discounted: votes.filter((x) => x.discounted).length,
       },
+      photos: photosForIssue(db, i.id),
+      ...verification(i),
       timeline: timeline(i.id, true),
     };
   }
@@ -387,6 +444,7 @@ export function createApp({ db = openDb(), demo = process.env.DEMO_MODE === 'tru
       id: i.id, confidential: true, title: 'Confidential report', reporter: 'Anonymous student', location: i.location_name || 'Not given',
       severity: i.severity, hazard: i.hazard, status: i.status, priority: i.priority_score, priority_breakdown: JSON.parse(i.priority_breakdown || 'null'),
       reason: i.reason, text: rep?.clean_text || '', created_at: i.created_at, updated_at: i.updated_at, department: 'Confidential',
+      photos: photosForIssue(db, i.id), ...verification(i),
       timeline: timeline(i.id, true),
     };
   }
@@ -424,9 +482,34 @@ export function createApp({ db = openDb(), demo = process.env.DEMO_MODE === 'tru
     const rows = db.prepare(`SELECT i.*, l.name AS location_name FROM issues i LEFT JOIN locations l ON l.id=i.location_id WHERE i.confidential=1 ORDER BY i.priority_score DESC, i.id`).all();
     res.json(rows.map(adminConfidentialView));
   });
+  // ---------- urgent support: where help is needed most ----------
+  app.get('/api/admin/urgent', requirePerm('admin:urgent'), (req, res) => {
+    const open = "('open','acknowledged','in_progress','reopened','resolved')";
+    const issues = db.prepare(`SELECT i.*, l.name AS location_name FROM issues i LEFT JOIN locations l ON l.id=i.location_id
+      WHERE i.confidential=0 AND i.status IN ${open} ORDER BY i.priority_score DESC, i.id LIMIT 60`).all();
+    const places = db.prepare(`SELECT l.id, l.name, l.building, COUNT(i.id) AS open_issues,
+        SUM(CASE WHEN i.severity='Critical' THEN 1 ELSE 0 END) AS critical,
+        ROUND(SUM(i.priority_score), 1) AS need_score,
+        (SELECT COUNT(DISTINCT m.user_id) FROM issue_members m JOIN issues j ON j.id=m.issue_id WHERE j.location_id=l.id AND j.confidential=0 AND j.status IN ${open}) AS students,
+        (SELECT COUNT(*) FROM photos p JOIN issue_members m ON m.report_id=p.report_id JOIN issues j ON j.id=m.issue_id WHERE j.location_id=l.id AND j.confidential=0 AND j.status IN ${open}) AS photos
+      FROM locations l JOIN issues i ON i.location_id=l.id AND i.confidential=0 AND i.status IN ${open}
+      GROUP BY l.id ORDER BY need_score DESC LIMIT 10`).all();
+    res.json({ places, issues: issues.map(staffView) });
+  });
+  const VerifyBody = z.object({ severity: z.enum(TIERS), note: z.string().trim().max(300).optional() });
+  app.post('/api/admin/issues/:id/verify', requirePerm('admin:verify'), v(IdParam, 'params'), v(VerifyBody), (req, res) => {
+    res.json(verifySeverity(db, req.user, req.valid.params.id, req.valid.body.severity, req.valid.body.note));
+  });
+  const DispatchBody = z.object({ note: z.string().trim().min(3, 'Say what support was sent (3+ characters).').max(300) });
+  app.post('/api/admin/issues/:id/dispatch', requirePerm('admin:dispatch'), v(IdParam, 'params'), v(DispatchBody), (req, res) => {
+    res.json(dispatchSupport(db, req.user, req.valid.params.id, req.valid.body.note));
+  });
+
   app.get('/api/admin/users', requirePerm('admin:users'), (req, res) => {
     const users = db.prepare('SELECT * FROM users ORDER BY role, id').all();
+    const acc = Object.fromEntries(db.prepare(`SELECT user_id, COUNT(*) total, SUM(CASE WHEN outcome IN ('accurate','close') THEN 1 ELSE 0 END) good FROM rating_outcomes GROUP BY user_id`).all().map((r) => [r.user_id, r]));
     res.json(users.map((u) => ({
+      rating_accuracy: acc[u.id] ? { rated: acc[u.id].total, accurate_or_close: acc[u.id].good } : null,
       id: u.id, name: u.name, username: u.username, role: u.role, department: u.department, mfa_enabled: !!u.mfa_enabled, trust_score: u.trust_score, vote_weight: personWeight(u), new_account: isNewAccount(u),
       trust_events: db.prepare('SELECT delta, reason, score_after, created_at FROM trust_events WHERE user_id=? ORDER BY id DESC LIMIT 30').all(u.id),
     })));
@@ -485,7 +568,7 @@ export function createApp({ db = openDb(), demo = process.env.DEMO_MODE === 'tru
   app.use((err, req, res, next) => {
     if (err instanceof UserError || err.expose) return res.status(err.status || 400).json({ error: err.message });
     if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON' });
-    if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Report is too long.' });
+    if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Too large. Photos up to 5 MB, reports up to 4000 characters.' });
     console.error('[error]', err);
     res.status(500).json({ error: 'Something went wrong. Your data is safe; please try again.' });
   });

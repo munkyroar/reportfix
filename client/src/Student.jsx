@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { get, post } from './api.js';
-import { usePoll, StatusChip, SeverityChip, Loading, ErrorBox, Empty, PriorityWhy, Timeline, TrustHistory, groupBy } from './components.jsx';
+import { usePoll, StatusChip, SeverityChip, Loading, ErrorBox, Empty, PriorityWhy, Timeline, TrustHistory, groupBy, Photos, CLAIMS, prepareImage } from './components.jsx';
 
 export default function Student({ notify, tab, setTab }) {
   return (
@@ -13,24 +13,55 @@ export default function Student({ notify, tab, setTab }) {
   );
 }
 
+async function uploadPhoto(reportId, blob) {
+  const res = await fetch(`/api/reports/${reportId}/photos`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': blob.type || 'image/jpeg' }, body: blob });
+  if (!res.ok) {
+    let msg = 'Photo upload failed.';
+    try { msg = (await res.json()).error || msg; } catch { /* not json */ }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
 function ReportForm({ notify, goMine }) {
   const [text, setText] = useState('');
+  const [claim, setClaim] = useState('');
+  const [files, setFiles] = useState([]); // [{file, url}]
   const [busy, setBusy] = useState(false);
+  const [stage, setStage] = useState('');
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
 
+  function pick(e) {
+    const chosen = Array.from(e.target.files || []).filter((f) => /^image\/(jpeg|png|webp|heic|heif)$/i.test(f.type) || /\.(jpe?g|png)$/i.test(f.name));
+    const next = [...files, ...chosen.map((file) => ({ file, url: URL.createObjectURL(file) }))].slice(0, 3);
+    setFiles(next);
+    e.target.value = '';
+  }
+  function remove(i) {
+    URL.revokeObjectURL(files[i].url);
+    setFiles(files.filter((_, k) => k !== i));
+  }
+
   async function submit(e) {
     e.preventDefault();
-    setBusy(true); setError(null); setResult(null);
+    setBusy(true); setError(null); setResult(null); setStage('Reading your report...');
     try {
-      const r = await post('/api/report', { text });
-      setResult(r);
-      setText('');
+      const r = await post('/api/report', { text, claimed_severity: claim || undefined });
+      let uploaded = 0;
+      const photoErrors = [];
+      for (const [k, f] of files.entries()) {
+        setStage(`Uploading photo ${k + 1} of ${files.length}...`);
+        try { await uploadPhoto(r.report_id, await prepareImage(f.file)); uploaded++; } catch (err) { photoErrors.push(err.message); }
+      }
+      setResult({ ...r, photos_uploaded: uploaded, photo_errors: photoErrors });
+      files.forEach((f) => URL.revokeObjectURL(f.url));
+      setText(''); setClaim(''); setFiles([]);
       notify(r.confidential ? 'Sent privately to the admin.' : r.items.length ? 'Report saved and routed.' : 'Report saved. Tell us where it is.');
     } catch (err) {
       setError(err.message);
     } finally {
-      setBusy(false);
+      setBusy(false); setStage('');
     }
   }
 
@@ -40,9 +71,40 @@ function ReportForm({ notify, goMine }) {
         <label htmlFor="report" className="label">What is wrong, and where?</label>
         <p className="muted small">Example: "Lab 3 ka projector kharab hai". Typos are fine. Harassment reports go privately to the admin.</p>
         <textarea id="report" rows={5} maxLength={4000} value={text} onChange={(e) => setText(e.target.value)} placeholder="Describe the problem..." />
+        <span className="muted small">{text.length}/4000</span>
+
+        <fieldset className="claim">
+          <legend className="label">How serious is it? <span className="muted small">(optional)</span></legend>
+          <div className="claim-row">
+            {CLAIMS.map(([k, l]) => (
+              <label key={k} className={claim === k ? 'claim-opt active' : 'claim-opt'}>
+                <input type="radio" name="claim" value={k} checked={claim === k} onChange={() => setClaim(k)} />{l}
+              </label>
+            ))}
+          </div>
+          <p className="muted small">This does not change the priority. The admin checks how serious it really was; accurate ratings raise your trust score, exaggerated ones lower it.</p>
+        </fieldset>
+
+        <div className="label">Photos <span className="muted small">(optional, up to 3, JPEG or PNG)</span></div>
+        <div className="photo-row">
+          {files.map((f, i) => (
+            <div key={f.url} className="photo-thumb">
+              <img src={f.url} alt={`Selected photo ${i + 1}`} />
+              <button type="button" className="photo-remove" onClick={() => remove(i)} aria-label={`Remove photo ${i + 1}`}>Remove</button>
+            </div>
+          ))}
+          {files.length < 3 && (
+            <label className="photo-add">
+              <input type="file" accept="image/jpeg,image/png" multiple onChange={pick} />
+              Add photo
+            </label>
+          )}
+        </div>
+        <p className="muted small">Location data (GPS) is removed from photos. Only the admin and the department fixing it can see them.</p>
+
         <div className="row">
-          <span className="muted">{text.length}/4000</span>
-          <button className="btn primary" disabled={busy || !text.trim()} type="submit">{busy ? 'Reading your report...' : 'Send report'}</button>
+          <span />
+          <button className="btn primary" disabled={busy || !text.trim()} type="submit">{busy ? stage : 'Send report'}</button>
         </div>
       </form>
       <ErrorBox text={error} />
@@ -65,6 +127,8 @@ function ReportResult({ r, goMine }) {
       {r.needs_clarification?.length > 0 && (
         <p className="warn">We could not place {r.needs_clarification.length === 1 ? 'this problem' : 'some problems'}: {r.needs_clarification[0].why} Pick the place in My issues.</p>
       )}
+      {r.photos_uploaded > 0 && <p className="ok">{r.photos_uploaded} photo{r.photos_uploaded > 1 ? 's' : ''} attached.</p>}
+      {r.photo_errors?.length > 0 && <p className="warn">Report saved, but {r.photo_errors.length} photo{r.photo_errors.length > 1 ? 's' : ''} could not be attached: {r.photo_errors[0]}</p>}
       {r.decisions?.length > 0 && <ul className="muted small">{r.decisions.map((d, k) => <li key={k}>{d}</li>)}</ul>}
       <button className="btn" onClick={goMine}>Track it in My issues</button>
     </div>
@@ -146,6 +210,7 @@ function MyIssueCard({ i, notify, onChange }) {
       <div className="card">
         <div className="card-head"><strong>{i.title}</strong><StatusChip status={i.status} /></div>
         <p className="muted">Only the admin can see this. Your name is hidden from everyone.</p>
+        <Photos ids={i.my_photos} label="Your photos" />
         <Timeline items={i.timeline} />
       </div>
     );
@@ -154,7 +219,8 @@ function MyIssueCard({ i, notify, onChange }) {
     <div className="card">
       <div className="card-head"><strong>{i.title}</strong><StatusChip status={i.status} /></div>
       <p>{i.reason}</p>
-      <p className="muted">{i.department} - <SeverityChip severity={i.severity} /> priority {i.priority} - {i.affected_count} affected{i.reopen_count ? ` - reopened ${i.reopen_count}x` : ''}</p>
+      <p className="muted">{i.department} - <SeverityChip severity={i.severity} /> priority {i.priority} - {i.affected_count} affected{i.reopen_count ? ` - reopened ${i.reopen_count}x` : ''}{i.verified_severity ? ' - severity verified by admin' : ''}</p>
+      <Photos ids={i.my_photos} label="Your photos" />
       {i.status === 'resolved' && !i.my_vote && (
         <div className="row">
           <span>Is it actually fixed?</span>

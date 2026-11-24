@@ -124,6 +124,45 @@ export function TrustHistory({ events }) {
   );
 }
 
+// Photos are served by an access-checked endpoint; the browser sends the session cookie (same origin).
+export function Photos({ ids, label = 'Photos' }) {
+  if (!ids?.length) return null;
+  return (
+    <div className="photos">
+      <span className="muted small">{label} ({ids.length})</span>
+      <div className="photo-row">
+        {ids.map((id) => (
+          <a key={id} href={`/api/photos/${id}`} target="_blank" rel="noopener noreferrer" className="photo-thumb" aria-label={`Open photo ${id}`}>
+            <img src={`/api/photos/${id}`} alt={`Evidence photo ${id}`} loading="lazy" />
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export const CLAIMS = [['minor', 'Minor'], ['moderate', 'Moderate'], ['serious', 'Serious'], ['emergency', 'Emergency']];
+export function RatingsSummary({ ratings }) {
+  const parts = CLAIMS.filter(([k]) => ratings?.[k]).map(([k, l]) => `${ratings[k]} ${l.toLowerCase()}`);
+  if (!parts.length) return null;
+  return <span>Students rated it: {parts.join(', ')}</span>;
+}
+
+// Re-encode in the browser before upload: shrinks phone photos under the 5 MB limit and drops EXIF/GPS on the device.
+export async function prepareImage(file, maxSide = 1600) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = url; });
+    const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * scale); c.height = Math.round(img.naturalHeight * scale);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    return await new Promise((ok) => c.toBlob(ok, 'image/jpeg', 0.85));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 export function groupBy(list, groups) {
   return groups.map(([key, label, pred]) => [key, label, list.filter(pred)]).filter(([, , l]) => l.length);
 }

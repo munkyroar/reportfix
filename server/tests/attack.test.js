@@ -20,9 +20,10 @@ let server, base, ctxDb, CREDS;
 const stats = { reports: 0, fallback: 0 };
 const BIG = { report: 1000, vote: 1000, global: 100000, login: 100000, authIp: 100000, register: 100000 };
 const credFile = path.join((await import('node:os')).tmpdir(), `rf-creds-${process.pid}.txt`);
+const UPLOADS = path.join((await import('node:os')).tmpdir(), `rf-uploads-${process.pid}`);
 
 before(async () => {
-  const { app, db, credentials } = createApp({ db: openDb(':memory:'), demo: true, limits: BIG, credentialsFile: credFile });
+  const { app, db, credentials } = createApp({ db: openDb(':memory:'), demo: true, limits: { ...BIG, photo: 1000 }, credentialsFile: credFile, uploadsDir: UPLOADS });
   ctxDb = db; CREDS = credentials;
   await new Promise((r) => { server = app.listen(0, '127.0.0.1', r); });
   base = `http://127.0.0.1:${server.address().port}`;
@@ -777,6 +778,165 @@ describe('Excel export', () => {
     // export is audited
     const flags = (await call('GET', '/api/admin/flags', undefined, await adminToken())).data;
     assert.ok(flags.some((f) => f.kind === 'data_export'));
+  });
+});
+
+// ---------------------------------------------------------------- photos
+const seg = (marker, payload) => { const b = Buffer.alloc(4); b[0] = 0xff; b[1] = marker; b.writeUInt16BE(payload.length + 2, 2); return Buffer.concat([b, payload]); };
+const JPEG_WITH_GPS = Buffer.concat([
+  Buffer.from([0xff, 0xd8]),
+  seg(0xe1, Buffer.from('Exif\0\0GPS-LAT-33.6844-SECRET')),
+  seg(0xdb, Buffer.from([0x00])),
+  seg(0xda, Buffer.from([0x00])), Buffer.from([0x11, 0x22, 0x33]), Buffer.from([0xff, 0xd9]),
+]);
+const chunk = (type, data) => { const l = Buffer.alloc(4); l.writeUInt32BE(data.length); return Buffer.concat([l, Buffer.from(type, 'latin1'), data, Buffer.alloc(4)]); };
+const PNG_WITH_TEXT = Buffer.concat([
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  chunk('IHDR', Buffer.alloc(13)), chunk('tEXt', Buffer.from('Location\0HOME-ADDRESS-SECRET')), chunk('IDAT', Buffer.from([1, 2, 3])), chunk('IEND', Buffer.alloc(0)),
+]);
+async function upload(token, reportId, body, type = 'image/jpeg') {
+  const res = await fetch(`${base}/api/reports/${reportId}/photos`, { method: 'POST', headers: { 'content-type': type, cookie: `rf_session=${token}` }, body });
+  let data = null; try { data = await res.json(); } catch { /* */ }
+  return { status: res.status, data };
+}
+async function getPhoto(token, id) {
+  const res = await fetch(`${base}/api/photos/${id}`, { headers: token ? { cookie: `rf_session=${token}` } : {} });
+  return { status: res.status, type: res.headers.get('content-type'), csp: res.headers.get('content-security-policy'), buf: Buffer.from(await res.arrayBuffer()) };
+}
+
+describe('Photo evidence', () => {
+  let me, other, reportId, issueId, photoId;
+  before(async () => {
+    me = await newStudent(); other = await newStudent();
+    const r = await report(me, 'library ke socket ke paas tooti hui wire latak rahi hai');
+    reportId = r.data.report_id; issueId = r.data.items[0].issue_id;
+  });
+  test('JPEG upload works and GPS/EXIF is stripped before storage', async () => {
+    const u = await upload(me, reportId, JPEG_WITH_GPS);
+    assert.equal(u.status, 201, JSON.stringify(u.data));
+    photoId = u.data.id;
+    const g = await getPhoto(me, photoId);
+    assert.equal(g.status, 200);
+    assert.equal(g.type, 'image/jpeg');
+    assert.match(g.csp, /sandbox/);
+    assert.ok(!g.buf.includes('Exif') && !g.buf.includes('SECRET'), 'metadata removed');
+    assert.equal(g.buf[0], 0xff); assert.equal(g.buf[1], 0xd8);
+  });
+  test('PNG text chunks are stripped', async () => {
+    const u = await upload(me, reportId, PNG_WITH_TEXT, 'image/png');
+    assert.equal(u.status, 201);
+    const g = await getPhoto(me, u.data.id);
+    assert.equal(g.type, 'image/png');
+    assert.ok(!g.buf.includes('SECRET'));
+  });
+  test('type comes from the bytes: HTML/SVG/script disguised as an image is rejected', async () => {
+    assert.equal((await upload(me, reportId, Buffer.from('<svg onload=alert(1)>'), 'image/png')).status, 400);
+    assert.equal((await upload(me, reportId, Buffer.from('<?php system($_GET[1]); ?>'), 'image/jpeg')).status, 400);
+    assert.equal((await upload(me, reportId, Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0xff, 0xff]), 'image/jpeg')).status, 400, 'truncated jpeg');
+    assert.equal((await upload(me, reportId, Buffer.alloc(0))).status, 400);
+  });
+  test('over 5 MB -> 413; 4th photo on a report -> 409', async () => {
+    assert.equal((await upload(me, reportId, Buffer.concat([JPEG_WITH_GPS, Buffer.alloc(5 * 1024 * 1024)]))).status, 413);
+    const r = await report(me, 'lab 1 mouse kharab');
+    for (let k = 0; k < 3; k++) assert.equal((await upload(me, r.data.report_id, JPEG_WITH_GPS)).status, 201);
+    assert.equal((await upload(me, r.data.report_id, JPEG_WITH_GPS)).status, 409);
+  });
+  test("cannot attach photos to someone else's report", async () => {
+    assert.equal((await upload(other, reportId, JPEG_WITH_GPS)).status, 404);
+    assert.equal((await upload(await staffToken('EE'), reportId, JPEG_WITH_GPS)).status, 403);
+  });
+  test('who can see it: admin, uploader, owning department staff; not other students or other departments', async () => {
+    const dept = (await issue(issueId)).department;
+    assert.equal((await getPhoto(await adminToken(), photoId)).status, 200);
+    assert.equal((await getPhoto(await staffToken(dept), photoId)).status, 200);
+    const otherDept = dept === 'CSE' ? 'IS' : 'CSE';
+    assert.equal((await getPhoto(await staffToken(otherDept), photoId)).status, 404);
+    assert.equal((await getPhoto(other, photoId)).status, 404);
+    assert.equal((await getPhoto(undefined, photoId)).status, 401);
+    assert.ok((await issue(issueId)).photos.includes(photoId), 'admin issue view lists the photo');
+    const board = (await call('GET', '/api/board', undefined, other)).data;
+    assert.ok(!JSON.stringify(board).includes('"photos"'), 'public board never exposes photos');
+  });
+  test('confidential evidence: admin and uploader only', async () => {
+    const s = await newStudent();
+    const r = await report(s, 'seniors are ragging juniors in boys hostel');
+    const u = await upload(s, r.data.report_id, JPEG_WITH_GPS);
+    assert.equal(u.status, 201);
+    assert.equal((await getPhoto(await adminToken(), u.data.id)).status, 200);
+    assert.equal((await getPhoto(s, u.data.id)).status, 200);
+    for (const d of ['EE', 'CSE', 'IS', 'Library', 'Cafeteria', 'Labs']) assert.equal((await getPhoto(await staffToken(d), u.data.id)).status, 404, d);
+  });
+});
+
+// ---------------------------------------------------------------- severity verification + credibility
+describe('Admin verifies severity; student ratings feed credibility', () => {
+  test("a student's own 'Emergency' rating never moves priority by itself", async () => {
+    const b = await call('POST', '/api/report', { text: 'chai in the cafe is cold today honestly', claimed_severity: 'emergency' }, await oldStudent());
+    assert.equal(b.status, 201);
+    assert.equal(b.data.items[0].severity, 'Low');
+    assert.ok(b.data.items[0].priority < 30);
+    assert.equal((await call('POST', '/api/report', { text: 'lab 1 mouse kharab', claimed_severity: 'apocalypse' }, await newStudent())).status, 400, 'only allowed values');
+  });
+  test('verify: accurate +3, one level off +1, two levels over -3, three levels over -6, playing it down 0', async () => {
+    const accurate = await oldStudent(), close = await oldStudent(), over = await oldStudent(), wild = await oldStudent(), down = await oldStudent();
+    const first = await call('POST', '/api/report', { text: 'the AC in the auditorium is not cooling', claimed_severity: 'moderate' }, accurate);
+    const id = first.data.items[0].issue_id;
+    for (const [tok, claim, text] of [[close, 'serious', 'auditorium AC band hai'], [over, 'emergency', 'AUDITORIUM AC NOT WORKING'], [down, 'minor', 'audi ka AC thoda kam chal raha']]) {
+      const r = await call('POST', '/api/report', { text, claimed_severity: claim }, tok);
+      assert.equal(r.data.items[0].issue_id, id, `grouped: ${text}`);
+    }
+    const lowIssue = (await call('POST', '/api/report', { text: 'the benches near the parking are dusty', claimed_severity: 'emergency' }, wild)).data.items[0].issue_id;
+
+    assert.equal((await call('POST', `/api/admin/issues/${id}/verify`, { severity: 'Medium', note: 'Checked the photos' }, await adminToken())).status, 200);
+    assert.equal((await call('POST', `/api/admin/issues/${lowIssue}/verify`, { severity: 'Low' }, await adminToken())).status, 200);
+    assert.equal((await me(accurate)).trust_score, 53);
+    assert.equal((await me(close)).trust_score, 51);
+    assert.equal((await me(over)).trust_score, 47);
+    assert.equal((await me(wild)).trust_score, 44);
+    assert.equal((await me(down)).trust_score, 51, 'minor vs Medium is one level: close +1');
+    assert.match((await me(over)).trust_events[0].reason, /rated issue #\d+ "Emergency".*verified it as Medium: overstated/);
+
+    // re-verifying does not score anyone twice
+    await call('POST', `/api/admin/issues/${id}/verify`, { severity: 'Medium' }, await adminToken());
+    assert.equal((await me(accurate)).trust_score, 53);
+    const i = await issue(id);
+    assert.equal(i.verified_severity, 'Medium');
+    assert.equal(i.student_ratings.emergency, 1);
+    assert.ok(i.timeline.some((t) => /Admin verified severity: Medium/.test(t.note)));
+    const users = (await call('GET', '/api/admin/users', undefined, await adminToken())).data;
+    const u = users.find((x) => x.id === (ctxDb.prepare('SELECT user_id FROM reports WHERE id=?').get(first.data.report_id).user_id));
+    assert.deepEqual(u.rating_accuracy, { rated: 1, accurate_or_close: 1 });
+  });
+  test('admin verification sets the real priority (up or down)', async () => {
+    const r = await report(await newStudent(), 'lecture hall 2 ki kursiyan tooti hui hain');
+    const id = r.data.items[0].issue_id;
+    assert.equal(r.data.items[0].severity, 'Low');
+    const v = await call('POST', `/api/admin/issues/${id}/verify`, { severity: 'High', note: 'Broken chairs are injuring students' }, await adminToken());
+    assert.ok(v.data.priority >= 60);
+    assert.equal((await issue(id)).severity, 'High');
+  });
+  test('only the admin can verify or dispatch', async () => {
+    const r = await report(await newStudent(), 'cafeteria mein khana thanda hai');
+    const id = r.data.items[0].issue_id;
+    for (const t of [await newStudent(), await staffToken('Cafeteria')]) {
+      assert.equal((await call('POST', `/api/admin/issues/${id}/verify`, { severity: 'Critical' }, t)).status, 403);
+      assert.equal((await call('POST', `/api/admin/issues/${id}/dispatch`, { note: 'sending help' }, t)).status, 403);
+      assert.equal((await call('GET', '/api/admin/urgent', undefined, t)).status, 403);
+    }
+    assert.equal((await call('POST', `/api/admin/issues/${id}/verify`, { severity: 'Extreme' }, await adminToken())).status, 400);
+  });
+  test('dispatch urgent support: logged, moves to in progress, shows on urgent board', async () => {
+    const r = await report(await newStudent(), 'smoke coming from the generator near the parking');
+    const id = r.data.items[0].issue_id;
+    const d = await call('POST', `/api/admin/issues/${id}/dispatch`, { note: 'Fire team sent' }, await adminToken());
+    assert.equal(d.status, 200);
+    assert.equal(d.data.status, 'in_progress');
+    const urgent = (await call('GET', '/api/admin/urgent', undefined, await adminToken())).data;
+    const row = urgent.issues.find((x) => x.id === id);
+    assert.ok(row.support_dispatched_at);
+    assert.ok(urgent.places.length >= 1);
+    assert.ok(urgent.issues[0].priority >= urgent.issues[urgent.issues.length - 1].priority, 'sorted by need');
+    assert.ok(!urgent.issues.some((x) => x.confidential), 'confidential never on the urgent board');
   });
 });
 

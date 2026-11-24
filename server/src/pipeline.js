@@ -15,7 +15,7 @@ export class UserError extends Error {
 
 const GROUPABLE = ['open', 'acknowledged', 'in_progress', 'reopened', 'resolved'];
 
-export async function submitReport(ctx, user, rawText) {
+export async function submitReport(ctx, user, rawText, claimedSeverity = null) {
   const { db } = ctx;
   const clean = sanitise(rawText);
   if (!clean || !hasWords(clean)) throw new UserError('Please describe the problem in words (what and where).');
@@ -33,8 +33,8 @@ export async function submitReport(ctx, user, rawText) {
   }
 
   const t = now();
-  const reportId = db.prepare(`INSERT INTO reports (user_id, raw_text, clean_text, ai_json, status, injection_flag, fallback_used, created_at)
-    VALUES (?,?,?,?,?,?,?,?)`).run(user.id, String(rawText).slice(0, 4000), clean, JSON.stringify(triage), 'processing', injection.length ? 1 : 0, fallbackUsed ? 1 : 0, t).lastInsertRowid;
+  const reportId = db.prepare(`INSERT INTO reports (user_id, raw_text, clean_text, ai_json, status, injection_flag, fallback_used, claimed_severity, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(user.id, String(rawText).slice(0, 4000), clean, JSON.stringify(triage), 'processing', injection.length ? 1 : 0, fallbackUsed ? 1 : 0, claimedSeverity, t).lastInsertRowid;
   db.prepare(`INSERT INTO ai_log (report_id, prompt_version, provider, raw_output, fallback_used, error, created_at) VALUES (?,?,?,?,?,?,?)`)
     .run(reportId, PROMPT_VERSION, provider || 'keyword-fallback', aiRaw ? String(aiRaw).slice(0, 4000) : null, fallbackUsed ? 1 : 0, aiError, t);
 
@@ -217,9 +217,9 @@ async function findSimilarOther(candidates, clean) {
 
 export function createIssue(db, f, user, reportId, note) {
   const t = now();
-  const id = db.prepare(`INSERT INTO issues (location_id, problem_type, department, severity, base_severity, hazard, priority_score, status, confidential, title, reason, sample_text, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-    f.location_id, f.problem_type, f.department, f.severity, { Critical: 100, High: 60, Medium: 30, Low: 10 }[f.severity], f.hazard,
+  const id = db.prepare(`INSERT INTO issues (location_id, problem_type, department, severity, ai_severity, base_severity, hazard, priority_score, status, confidential, title, reason, sample_text, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    f.location_id, f.problem_type, f.department, f.severity, f.severity, { Critical: 100, High: 60, Medium: 30, Low: 10 }[f.severity], f.hazard,
     0, 'open', f.confidential, f.title, f.reason, f.sample_text, t, t,
   ).lastInsertRowid;
   db.prepare(`INSERT INTO issue_members (issue_id, user_id, report_id, joined_at) VALUES (?,?,?,?)`).run(id, user.id, reportId, t);

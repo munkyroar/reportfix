@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { get, post, patch } from './api.js';
-import { usePoll, StatusChip, SeverityChip, Loading, ErrorBox, Empty, PriorityWhy, Timeline, TrustHistory, groupBy, fmtTime } from './components.jsx';
+import { usePoll, StatusChip, SeverityChip, Loading, ErrorBox, Empty, PriorityWhy, Timeline, TrustHistory, groupBy, fmtTime, Photos, RatingsSummary } from './components.jsx';
 
 const DEPTS = ['EE', 'CSE', 'IS', 'Library', 'Cafeteria', 'Labs', 'Admin'];
 
@@ -38,7 +38,55 @@ const NEXT = {
   in_progress: [['resolved', 'Mark resolved']],
 };
 
-export function ManageCard({ i, notify, onChange }) {
+// Admin-only: verify how severe it really was (scores student ratings) and dispatch urgent support
+function AdminControls({ i, notify, onChange }) {
+  const [sev, setSev] = useState(i.verified_severity || '');
+  const [vnote, setVnote] = useState('');
+  const [dnote, setDnote] = useState('');
+  const [error, setError] = useState(null);
+  const finished = ['closed', 'rejected'].includes(i.status);
+  async function run(fn, msg) {
+    setError(null);
+    try { await fn(); notify(msg); setVnote(''); setDnote(''); onChange(); } catch (e) { setError(e.message); }
+  }
+  return (
+    <div className="admin-controls">
+      <div className="ctl">
+        <div className="ctl-head">
+          <strong>Verify actual severity</strong>
+          <span className="muted small">
+            System estimate: {i.ai_severity}{i.verified_severity ? ` · verified: ${i.verified_severity}` : ''}{' · '}
+            <RatingsSummary ratings={i.student_ratings} />
+          </span>
+        </div>
+        <div className="row wrap">
+          <select value={sev} onChange={(e) => setSev(e.target.value)} aria-label="Verified severity">
+            <option value="">Choose...</option>
+            {['Critical', 'High', 'Medium', 'Low'].map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <input value={vnote} onChange={(e) => setVnote(e.target.value)} maxLength={300} placeholder="Why (optional, logged)" aria-label="Verification note" />
+          <button className="btn primary" disabled={!sev} onClick={() => run(() => post(`/api/admin/issues/${i.id}/verify`, { severity: sev, note: vnote || undefined }), `Verified as ${sev}. Student ratings scored.`)}>Verify</button>
+        </div>
+        <p className="muted small">Sets the real priority. Students who rated it gain trust if they were accurate and lose it if they exaggerated.</p>
+      </div>
+      {!finished && (
+        <div className="ctl">
+          <div className="ctl-head">
+            <strong>Urgent support</strong>
+            {i.support_dispatched_at && <span className="chip chip-in_progress">Dispatched {fmtTime(i.support_dispatched_at)}: {i.support_note}</span>}
+          </div>
+          <div className="row wrap">
+            <input value={dnote} onChange={(e) => setDnote(e.target.value)} maxLength={300} placeholder="What is being sent (e.g. electrician, first aid, cleaning team)" aria-label="Support sent" />
+            <button className="btn danger" disabled={dnote.trim().length < 3} onClick={() => run(() => post(`/api/admin/issues/${i.id}/dispatch`, { note: dnote }), 'Urgent support dispatched.')}>Dispatch urgent support</button>
+          </div>
+        </div>
+      )}
+      <ErrorBox text={error} />
+    </div>
+  );
+}
+
+export function ManageCard({ i, notify, onChange, admin = false }) {
   const [error, setError] = useState(null);
   const [mode, setMode] = useState(null); // 'reject' | 'reroute'
   const [note, setNote] = useState('');
@@ -62,6 +110,12 @@ export function ManageCard({ i, notify, onChange }) {
       {i.votes && (i.votes.confirm + i.votes.dispute > 0) && (
         <p className="muted">Votes this round: {i.votes.confirm} confirm (weight {i.votes.confirm_weight}), {i.votes.dispute} dispute (weight {i.votes.dispute_weight}){i.votes.discounted ? `, ${i.votes.discounted} discounted as brigading` : ''}</p>
       )}
+      {!admin && (i.verified_severity || Object.keys(i.student_ratings || {}).length > 0) && (
+        <p className="muted small"><RatingsSummary ratings={i.student_ratings} />{i.verified_severity ? ` · admin verified: ${i.verified_severity}` : ''}</p>
+      )}
+      {!admin && i.support_dispatched_at && <p className="ok">Urgent support dispatched by admin: {i.support_note}</p>}
+      <Photos ids={i.photos} />
+      {admin && <AdminControls i={i} notify={notify} onChange={onChange} />}
       {actions.length > 0 && (
         <div className="row wrap">
           {actions.map(([s, label], k) => <button key={s} className={k === actions.length - 1 ? 'btn primary' : 'btn'} onClick={() => setStatus(s)}>{label}</button>)}
@@ -95,6 +149,7 @@ export function ManageCard({ i, notify, onChange }) {
 export function Admin({ notify, tab }) {
   return (
     <>
+      {tab === 'urgent' && <Urgent notify={notify} />}
       {tab === 'all' && <AllIssues notify={notify} />}
       {tab === 'conf' && <Confidential notify={notify} />}
       {tab === 'users' && <Users />}
@@ -102,6 +157,44 @@ export function Admin({ notify, tab }) {
       {tab === 'summary' && <Summary />}
       {tab === 'export' && <ExportPanel notify={notify} />}
     </>
+  );
+}
+
+function Urgent({ notify }) {
+  const { data, error, loading, reload } = usePoll(() => get('/api/admin/urgent'));
+  const [onlyPhotos, setOnlyPhotos] = useState(false);
+  if (loading && !data) return <Loading />;
+  if (!data) return <ErrorBox text={error} />;
+  if (!data.issues.length) return <Empty text="No open problems on campus right now." action="Refresh" onAction={reload} />;
+  const list = onlyPhotos ? data.issues.filter((i) => i.photos.length) : data.issues;
+  return (
+    <section>
+      <div className="group">
+        <h3>Places that need help most</h3>
+        <table className="table">
+          <thead><tr><th>Place</th><th>Open issues</th><th>Critical</th><th>Students affected</th><th>Photos</th><th>Need score</th></tr></thead>
+          <tbody>
+            {data.places.map((p) => (
+              <tr key={p.id}>
+                <td><strong>{p.name}</strong><div className="muted small">{p.building}</div></td>
+                <td>{p.open_issues}</td>
+                <td className={p.critical ? 'neg' : ''}>{p.critical}</td>
+                <td>{p.students}</td>
+                <td>{p.photos}</td>
+                <td>{p.need_score}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="muted small">Need score = sum of the priorities of open issues at that place.</p>
+      </div>
+      <div className="group">
+        <div className="row"><h3>Open problems, most urgent first ({list.length})</h3>
+          <label className="small"><input type="checkbox" checked={onlyPhotos} onChange={(e) => setOnlyPhotos(e.target.checked)} /> Only with photos</label>
+        </div>
+        {list.map((i) => <ManageCard key={i.id} i={i} notify={notify} onChange={reload} admin />)}
+      </div>
+    </section>
   );
 }
 
@@ -113,7 +206,7 @@ function AllIssues({ notify }) {
   return (
     <section>
       {chunks(data).map(([k, label, list]) => (
-        <div className="group" key={k}><h3>{label} ({list.length})</h3>{list.map((i) => <ManageCard key={i.id} i={i} notify={notify} onChange={reload} />)}</div>
+        <div className="group" key={k}><h3>{label} ({list.length})</h3>{list.map((i) => <ManageCard key={i.id} i={i} notify={notify} onChange={reload} admin />)}</div>
       ))}
     </section>
   );
@@ -143,7 +236,9 @@ function ConfCard({ i, notify, onChange }) {
       <div className="card-head"><strong>#{i.id} Confidential - {i.reporter}</strong><StatusChip status={i.status} /></div>
       <p className="quote">{i.text}</p>
       <p className="muted"><SeverityChip severity={i.severity} /> priority {i.priority}{i.hazard !== 'none' ? ` - hazard: ${i.hazard} (someone may be hurt)` : ''} - place: {i.location}</p>
+      <Photos ids={i.photos} label="Evidence photos" />
       {actions.length > 0 && <div className="row wrap">{actions.map(([s, label]) => <button key={s} className="btn" onClick={() => setStatus(s)}>{label}</button>)}</div>}
+      <AdminControls i={i} notify={notify} onChange={onChange} />
       <ErrorBox text={error} />
       <Timeline items={i.timeline} />
     </div>
@@ -174,7 +269,7 @@ function Users() {
       )}
       <ErrorBox text={err} />
       <table className="table">
-        <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>2FA</th><th>Trust</th><th>Weight</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>2FA</th><th>Trust</th><th>Weight</th><th>Rating accuracy</th><th></th></tr></thead>
         <tbody>
           {data.map((u) => (
             <tr key={u.id}>
@@ -184,6 +279,7 @@ function Users() {
               <td>{u.mfa_enabled ? 'On' : 'Off'}</td>
               <td>{u.trust_score}</td>
               <td>{u.vote_weight}</td>
+              <td>{u.rating_accuracy ? `${u.rating_accuracy.accurate_or_close}/${u.rating_accuracy.rated} accurate` : '-'}</td>
               <td className="actions">
                 <button className="btn small" onClick={() => setOpen(open === u.id ? null : u.id)}>{open === u.id ? 'Hide' : 'Why?'}</button>
                 {u.role !== 'admin' && <button className="btn small" onClick={() => resetCode(u)}>Reset code</button>}

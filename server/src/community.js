@@ -1,7 +1,44 @@
 // Community layer: me-too, staff status changes, resolution voting, reopen/close, trust, brigading.
 import { UserError, recomputePriority } from './pipeline.js';
 import { addTrust, logStatus, addFlag, now } from './store.js';
-import { personWeight, evaluateVotes, TRUST, ROUTE_TARGETS, NEW_ACCOUNT_MS } from './rules.js';
+import { personWeight, evaluateVotes, TRUST, ROUTE_TARGETS, NEW_ACCOUNT_MS, TIER_BASE, scoreRating, CLAIM_LABEL } from './rules.js';
+
+// Admin decides how severe the problem actually was. That becomes the issue's severity (priority is recomputed),
+// and every reporter who rated it gets a trust change based on how close their rating was. Each (report, issue) scores once.
+export function verifySeverity(db, admin, issueId, severity, note) {
+  const issue = getIssue(db, issueId);
+  if (admin.role !== 'admin') throw new UserError('Forbidden', 403);
+  const before = issue.severity;
+  db.prepare('UPDATE issues SET severity=?, base_severity=?, verified_severity=?, verified_note=?, verified_at=?, updated_at=? WHERE id=?')
+    .run(severity, TIER_BASE[severity], severity, note || null, now(), now(), issueId);
+  logStatus(db, issueId, issue.status, issue.status, admin.id,
+    `Admin verified severity: ${severity}${before !== severity ? ` (was ${before})` : ''}${note ? `. ${note}` : ''}`);
+
+  const raters = db.prepare(`SELECT r.id AS report_id, r.user_id, r.claimed_severity FROM issue_members m JOIN reports r ON r.id=m.report_id
+    WHERE m.issue_id=? AND r.claimed_severity IS NOT NULL`).all(issueId);
+  const scored = [];
+  const ins = db.prepare('INSERT OR IGNORE INTO rating_outcomes (report_id, issue_id, user_id, claimed, verified, outcome, delta, created_at) VALUES (?,?,?,?,?,?,?,?)');
+  for (const r of raters) {
+    const { outcome, delta } = scoreRating(r.claimed_severity, severity);
+    if (!ins.run(r.report_id, issueId, r.user_id, r.claimed_severity, severity, outcome, delta, now()).changes) continue; // already scored
+    if (delta !== 0 || outcome === 'understated') {
+      addTrust(db, r.user_id, delta, `You rated issue #${issueId} "${CLAIM_LABEL[r.claimed_severity]}"; the admin verified it as ${severity}: ${outcome}${delta ? ` (${delta > 0 ? '+' : ''}${delta})` : ' (no penalty for playing it down)'}.`, issueId);
+    }
+    scored.push({ user_id: r.user_id, outcome, delta });
+  }
+  const pr = recomputePriority(db, issueId);
+  return { severity, priority: pr.total, scored: scored.length };
+}
+
+export function dispatchSupport(db, admin, issueId, note) {
+  const issue = getIssue(db, issueId);
+  if (admin.role !== 'admin') throw new UserError('Forbidden', 403);
+  if (['closed', 'rejected'].includes(issue.status)) throw new UserError('This issue is finished.', 409);
+  const to = ['open', 'acknowledged', 'reopened'].includes(issue.status) ? 'in_progress' : issue.status;
+  db.prepare('UPDATE issues SET support_dispatched_at=?, support_note=?, status=?, updated_at=? WHERE id=?').run(now(), note, to, now(), issueId);
+  logStatus(db, issueId, issue.status, to, admin.id, `Urgent support dispatched by admin: ${note}`);
+  return { status: to };
+}
 
 const OPENISH = ['open', 'acknowledged', 'in_progress', 'reopened', 'resolved'];
 
