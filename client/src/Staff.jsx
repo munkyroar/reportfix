@@ -146,13 +146,13 @@ export function ManageCard({ i, notify, onChange, admin = false }) {
   );
 }
 
-export function Admin({ notify, tab }) {
+export function Admin({ notify, tab, demo = false }) {
   return (
     <>
       {tab === 'urgent' && <Urgent notify={notify} />}
       {tab === 'all' && <AllIssues notify={notify} />}
       {tab === 'conf' && <Confidential notify={notify} />}
-      {tab === 'users' && <Users />}
+      {tab === 'users' && <Users demo={demo} />}
       {tab === 'flags' && <Flags />}
       {tab === 'summary' && <Summary />}
       {tab === 'export' && <ExportPanel notify={notify} />}
@@ -245,7 +245,7 @@ function ConfCard({ i, notify, onChange }) {
   );
 }
 
-function Users() {
+function Users({ demo = false }) {
   const { data, error, loading } = usePoll(() => get('/api/admin/users'), 5000);
   const [open, setOpen] = useState(null);
   const [issued, setIssued] = useState(null);
@@ -269,20 +269,20 @@ function Users() {
       )}
       <ErrorBox text={err} />
       <table className="table">
-        <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>2FA</th><th>Trust</th><th>Weight</th><th>Rating accuracy</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Username</th><th>Role</th>{!demo && <th>2FA</th>}<th>Trust</th><th>Weight</th><th>Rating accuracy</th><th></th></tr></thead>
         <tbody>
           {data.map((u) => (
             <tr key={u.id}>
               <td>{u.name}{u.new_account ? ' (new)' : ''}</td>
               <td>{u.username}</td>
               <td>{u.role}{u.department ? ` - ${u.department}` : ''}</td>
-              <td>{u.mfa_enabled ? 'On' : 'Off'}</td>
+              {!demo && <td>{u.mfa_enabled ? 'On' : 'Off'}</td>}
               <td>{u.trust_score}</td>
               <td>{u.vote_weight}</td>
               <td>{u.rating_accuracy ? `${u.rating_accuracy.accurate_or_close}/${u.rating_accuracy.rated} accurate` : '-'}</td>
               <td className="actions">
                 <button className="btn small" onClick={() => setOpen(open === u.id ? null : u.id)}>{open === u.id ? 'Hide' : 'Why?'}</button>
-                {u.role !== 'admin' && <button className="btn small" onClick={() => resetCode(u)}>Reset code</button>}
+                {!demo && u.role !== 'admin' && <button className="btn small" onClick={() => resetCode(u)}>Reset code</button>}
               </td>
             </tr>
           ))}

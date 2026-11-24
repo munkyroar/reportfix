@@ -58,7 +58,8 @@ export default function App() {
   if (me === undefined) return <div className="center"><Loading /></div>;
   if (!me) return <Login onDone={loadMe} error={error} demo={config?.demo} />;
 
-  const nav = NAV.filter(([, , perm]) => me.permissions.includes(perm));
+  // In demo mode nobody signs in with a password, so password / 2FA settings are hidden.
+  const nav = NAV.filter(([k, , perm]) => me.permissions.includes(perm) && !(config?.demo && k === 'account'));
   const roleLabel = me.role === 'staff' ? `${me.department} staff` : me.role === 'admin' ? 'Administrator' : 'Student';
 
   return (
@@ -93,10 +94,10 @@ export default function App() {
           <p className="muted">{SUBTITLE[page] || ''}</p>
         </header>
         <ErrorBox text={error} />
-        {page === 'account' && <Account me={me} notify={notify} reload={loadMe} />}
+        {page === 'account' && !config?.demo && <Account me={me} notify={notify} reload={loadMe} />}
         {me.role === 'student' && page !== 'account' && <Student key={page} tab={page} setTab={setPage} notify={notify} />}
         {me.role === 'staff' && page === 'queue' && <StaffQueue user={me} notify={notify} />}
-        {me.role === 'admin' && !['board', 'account'].includes(page) && <Admin key={page} tab={page} notify={notify} />}
+        {me.role === 'admin' && !['board', 'account'].includes(page) && <Admin key={page} tab={page} notify={notify} demo={!!config?.demo} />}
         {me.role !== 'student' && page === 'board' && <Board notify={notify} readOnly />}
       </main>
       <Toast toast={toast} onDone={clearToast} />
